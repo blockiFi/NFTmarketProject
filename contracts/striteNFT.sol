@@ -1087,6 +1087,10 @@ contract striteNFT is ERC721 , Ownable{
         return Items[tokenId].uri;
     }
 
+    function tokenCreator(uint256 tokenId) public view virtual  returns (address) {
+        require(_exists(tokenId), "ERC721Metadata: URI query for nonexistent token");
+        return Items[tokenId].creator;
+    }
     
     
    function addAdmin(address adminAddress) public onlyOwner {
