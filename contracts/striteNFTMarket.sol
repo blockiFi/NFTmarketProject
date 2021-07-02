@@ -407,7 +407,7 @@ pragma solidity ^0.8.2;
     mapping( address => mapping(uint256 => bool)) public isActiveOnSale;
     // percentage of sales
   
-    address payable feeRemitanceAddress;
+    address payable private feeRemitanceAddress;
     
     
     struct paymentMethod {
@@ -416,38 +416,27 @@ pragma solidity ^0.8.2;
         uint256 feeBalance;
         bool isSet;
     }
-    address[] private acceptedPayments;
-    mapping(address =>  paymentMethod) public paymentMethods;
+    address[] public  acceptedPayments;
+    mapping(address =>  paymentMethod) private paymentMethods;
     mapping(address =>  bool) public isActivepaymentMethod;
     mapping(address => bool) public acceptedTokens;
-    mapping (address => bool) isExcludedFromFees;
-    mapping (address =>  bool) isAdmin;
+    mapping (address => bool) public isExcludedFromFees;
+   
     //settings 
-    bool public activeMinimums;
-    bool public canWithdrawBid;
-     modifier onlyAdmin() {
-        require( isAdmin[_msgSender()] || owner() == _msgSender(), " caller has no minting right!!!");
-        _;
-    }
+    bool private activeMinimums;
+    bool private canWithdrawBid;
+   
+    //events 
+    event itemAddedToSales(address seller ,uint256 saleID , uint256 askingPrice , bool auctionable );
+    event bidAddedToSale(address bidder , uint256 saleID , uint256 bidAmount);
+    event itemSold(address buyer , address seller , uint256 saleID , uint256 amount);
     
-    modifier acceptedNFT(address tokenAddress) {
-        require(acceptedTokens[tokenAddress] , "Only Accepted NFT contracts can be uploaded to Strite Market.");
-        _;
-    } 
     modifier onlySalesOwner(uint256 saleID) {
         require(itemsForSale[saleID].owner == _msgSender() , "Only Sales Owner can call this function");
         _;
     }
-    modifier onlyTokenOwner(address tokenAddress , uint256 tokenID){
-        IERC721 NFTtoken =  IERC721(tokenAddress);
-        require(NFTtoken.ownerOf(tokenID) == _msgSender() , "Only Token Owners Can Put Token on Sale");
-        _;
-    }
-    modifier hasTokenApproval(address tokenAddress , uint256 tokenID){
-      IERC721 NFTtoken =  IERC721(tokenAddress);
-        require(NFTtoken.getApproved(tokenID) == address(this) , "grant Strite Market approval for token.");
-        _;  
-    }
+  
+  
     modifier activSales (uint256 saleID){
          require(isActiveOnSale[itemsForSale[saleID].tokenAddress][itemsForSale[saleID].tokenID]  && !itemsForSale[saleID].isSold  , "Item not in sale");
          _;  
@@ -460,7 +449,10 @@ pragma solidity ^0.8.2;
         uint256 _tokenID ,  
         uint256 _askingPrice , 
         address _acceptedPayment ,
-        bool _auctionable) public acceptedNFT(_tokenAddress) onlyTokenOwner( _tokenAddress , _tokenID)  hasTokenApproval(_tokenAddress , _tokenID) returns (uint256) {
+        bool _auctionable) public  returns (uint256) {
+         require(acceptedTokens[_tokenAddress] , "NFT not Accepted");
+         require(IERC721(_tokenAddress).ownerOf(_tokenID) == _msgSender() , "not Token Owner");
+          require(IERC721(_tokenAddress).getApproved(_tokenID) == address(this) , "Approval not granted.");
          require(!isActiveOnSale[_tokenAddress][_tokenID] , "item already on sales"); 
          require(isActivepaymentMethod[_acceptedPayment] , "Payment Method Not Active");
          acceptNewNFT(_tokenAddress , _tokenID); 
@@ -476,46 +468,10 @@ pragma solidity ^0.8.2;
         newItemForSale.isSold = false;
         newItemForSale.acceptedPaymentMethod  = _acceptedPayment;
         itemsForSaleList.push(salesID);
+        emit itemAddedToSales(_msgSender() , salesID ,  _askingPrice ,  _auctionable );
         return salesID;
     }
-    function acceptNewNFT(address _dtokenAddress ,uint256 _dtokenID) private {
-        IERC721 NFTtoken =  IERC721(_dtokenAddress);
-        NFTtoken.safeTransferFrom(_msgSender(), address(this) , _dtokenID  );
-    
-    }
-    function sendNTF(address _dtokenAddress ,uint256 _dtokenID , address recipient) private {
-        IERC721 NFTtoken =  IERC721(_dtokenAddress);
-        NFTtoken.safeTransferFrom(address(this),  recipient , _dtokenID);
-    }
-    function payoutUser(address payable recipient , address _paymentMethod , uint256 amount) private{
-        if(_paymentMethod == address(0)){
-          recipient.transfer(amount);
-        }else {
-             IERC20 currentPaymentMethod = IERC20(_paymentMethod);
-             currentPaymentMethod.transfer(recipient , amount);
-        }
-    }
-    function activateNftToken(address _tokenAddress) public onlyAdmin {
-         require(_tokenAddress != address(0), " NFT not supported at zero address");
-         acceptedTokens[_tokenAddress] = true;
-         
-    }
-     function deactivateNftToken(address _tokenAddress) public onlyAdmin {
-         require(_tokenAddress != address(0), " NFT not supported at zero address");
-         acceptedTokens[_tokenAddress] = false;
-         
-    }
-    function addPaymentMethod(address paymentAddress ,  uint256 fee) public onlyAdmin {
-         
-        require(!paymentMethods[paymentAddress].isSet, "payment method already added");
-        paymentMethod storage newPaymentMethod = paymentMethods[paymentAddress];
-        newPaymentMethod.tokenAddress = paymentAddress;
-        newPaymentMethod.fees = fee;
-        newPaymentMethod.isSet = true ;
-        isActivepaymentMethod[paymentAddress] = true;
-        
-        
-    }
+   
     function buyItem(uint256 saleID , uint256 amount ) public payable activSales(saleID) {
         require(!itemsForSale[saleID].auctionable , "auctionable sales dont allow outright purchase, place a bid");
         require(amount >= itemsForSale[saleID].askingPrice , "amount below asking price");
@@ -523,7 +479,7 @@ pragma solidity ^0.8.2;
          ItemForSale storage currentSaleItem =  itemsForSale[saleID];
          paymentMethod storage currentPaymentMethod = paymentMethods[currentSaleItem.acceptedPaymentMethod];
          if(currentPaymentMethod.fees > 0){
-        //   amount = deductTask(saleID , amount);  
+        amount = deductFees(saleID , amount);  
          }
          //send BFT to buyer
          sendNTF( currentSaleItem.tokenAddress , currentSaleItem.tokenID , msg.sender);
@@ -532,7 +488,7 @@ pragma solidity ^0.8.2;
          currentSaleItem.isSold = true;
          isActiveOnSale[currentSaleItem.tokenAddress][currentSaleItem.tokenID] = false;
          
-         
+         emit itemSold( _msgSender() , currentSaleItem.owner ,  saleID ,  amount);
         
     }
     function placeBID(uint256 saleID , uint256 amount ) public payable activSales(saleID){
@@ -559,6 +515,7 @@ pragma solidity ^0.8.2;
         if( itemsForSale[saleID].bids[_msgSender()].amount >  itemsForSale[saleID].winningBid.amount){
             itemsForSale[saleID].winningBid =  itemsForSale[saleID].bids[_msgSender()];
         }
+       emit  bidAddedToSale( _msgSender() ,  saleID ,  amount);
         
     }
     function withdrawBid(uint256 saleID) public activSales(saleID){
@@ -581,14 +538,14 @@ pragma solidity ^0.8.2;
          uint256 payoutAmount  = currentSaleItem.winningBid.amount;
           currentSaleItem.bids[currentSaleItem.winningBid.bidder].isActive = false; 
          if(currentPaymentMethod.fees > 0){
-        //   amount = deductTask(saleID , amount);  
-        //   payoutAmount = deductTask(saleID , amount);  
+          payoutAmount = deductFees(saleID , payoutAmount);  
          }
          payoutUser(currentSaleItem.owner , currentSaleItem.acceptedPaymentMethod , payoutAmount);
          
          refundActiveBidders(saleID);
          currentSaleItem.isSold = true;
          isActiveOnSale[currentSaleItem.tokenAddress][currentSaleItem.tokenID] = false;
+          emit itemSold( currentSaleItem.owner , currentSaleItem.winningBid.bidder ,  saleID ,  currentSaleItem.winningBid.amount);
         
     }
     function cancelSales(uint256 saleID) public onlySalesOwner(saleID) activSales(saleID) {
@@ -614,6 +571,41 @@ pragma solidity ^0.8.2;
                   
               }
        }
+    }
+     function acceptNewNFT(address _dtokenAddress ,uint256 _dtokenID) private {
+        IERC721 NFTtoken =  IERC721(_dtokenAddress);
+        NFTtoken.safeTransferFrom(_msgSender(), address(this) , _dtokenID  );
+    
+    }
+    function sendNTF(address _dtokenAddress ,uint256 _dtokenID , address recipient) private {
+        IERC721 NFTtoken =  IERC721(_dtokenAddress);
+        NFTtoken.safeTransferFrom(address(this),  recipient , _dtokenID);
+    }
+    function payoutUser(address payable recipient , address _paymentMethod , uint256 amount) private{
+        if(_paymentMethod == address(0)){
+          recipient.transfer(amount);
+        }else {
+             IERC20 currentPaymentMethod = IERC20(_paymentMethod);
+             currentPaymentMethod.transfer(recipient , amount);
+        }
+    }
+      
+    
+     function NftTokenStatusUpdate(address _tokenAddress ,bool Nftstatus) public onlyOwner {
+         require(_tokenAddress != address(0), " NFT not supported at zero address");
+         acceptedTokens[_tokenAddress] = Nftstatus;
+         
+    }
+    function addPaymentMethod(address paymentAddress ,  uint256 fee) public onlyOwner {
+         
+        require(!paymentMethods[paymentAddress].isSet, "payment method already added");
+        paymentMethod storage newPaymentMethod = paymentMethods[paymentAddress];
+        newPaymentMethod.tokenAddress = paymentAddress;
+        newPaymentMethod.fees = fee;
+        newPaymentMethod.isSet = true ;
+        isActivepaymentMethod[paymentAddress] = true;
+        
+        
     }
     function processedPayment(uint256 saleID , uint256 amount ) internal returns (bool) {
         ItemForSale storage currentItem =  itemsForSale[saleID];
@@ -641,17 +633,59 @@ pragma solidity ^0.8.2;
             return false;  
           }
     }
-     function activatePaymentMethod(address paymentAddress) public onlyAdmin {
+    function deductFees(uint256 saleID , uint256 amount) internal returns (uint256) {
+        ItemForSale storage currentSaleItem =  itemsForSale[saleID];
+         paymentMethod storage currentPaymentMethod = paymentMethods[currentSaleItem.acceptedPaymentMethod];
+         
+         if(currentPaymentMethod.fees > 0){
+          uint256 fees_to_deduct = amount * currentPaymentMethod.fees  / 1000;
+          currentPaymentMethod.feeBalance += fees_to_deduct;
+          return amount - fees_to_deduct;
+          
+         }else {
+             return amount;
+         }
+    }
+    function remitFees() public onlyOwner {
+        for (uint256 i = 0 ; i < acceptedPayments.length ; i++){
+            if(isActivepaymentMethod[acceptedPayments[i]]){
+                if(paymentMethods[acceptedPayments[i]].feeBalance > 0 &&
+                IERC20(paymentMethods[acceptedPayments[i]].tokenAddress).balanceOf(address(this)) >= paymentMethods[acceptedPayments[i]].feeBalance) {
+                  payoutUser(feeRemitanceAddress , acceptedPayments[i] ,  paymentMethods[acceptedPayments[i]].feeBalance) ;
+                   paymentMethods[acceptedPayments[i]].feeBalance = 0;
+                }
+            }
+        }
+    }
+     function activatePaymentMethod(address paymentAddress) public onlyOwner {
           require(paymentMethods[paymentAddress].isSet, "payment method not added");
          require(!isActivepaymentMethod[paymentAddress] , "payment method already active");
        isActivepaymentMethod[paymentAddress] = true;
          
     }
-     function deactivatePaymentMethod(address paymentAddress) public onlyAdmin {
+     function deactivatePaymentMethod(address paymentAddress) public onlyOwner {
           require(paymentMethods[paymentAddress].isSet, "payment method not  added");
           require(isActivepaymentMethod[paymentAddress] , "payment method already inactive");
           isActivepaymentMethod[paymentAddress] = false;
          
          
     }
+    function feeRemitanceAddressUpdate(address payable _feeRemitanceAddress) public onlyOwner {
+        require(_feeRemitanceAddress != address(0) , "cant make address 0 fee remitance address");
+        feeRemitanceAddress = _feeRemitanceAddress;
+    }
+    function settings(bool activeMinimumsState , bool canWithdrawBidState) public onlyOwner {
+        activeMinimums = activeMinimumsState;
+        canWithdrawBid = canWithdrawBidState;
+    }
+    function setPaymentMethodFees(address _paymentMethod ,  uint256 _fees) public onlyOwner{
+        require(_fees >= 1 && _fees <= 300 , "out of range");
+        require(paymentMethods[_paymentMethod].isSet , "invalid paymentMethod");
+        paymentMethods[_paymentMethod].fees = _fees;
+    }
+    function ex_in_Clude_FromFee(address _seller , bool status) public onlyOwner {
+        isExcludedFromFees[_seller] = status;
+    }
+   
+
 }
